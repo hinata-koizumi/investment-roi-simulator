@@ -1,190 +1,173 @@
-# ──────────────────────────────────────────
-# Cell 1: パラメータ入力セル
-#@markdown ### パラメータ入力
-from dataclasses import dataclass, replace
+"""
+Hire Payback Simulation Tool
+===========================
 
-# 各パラメータを入力してください（単位：円/月、月数など）
-採用費用         = 500000         #@param {type:"number", min:0, step:1000}
-採用前分割月     = 1             #@param {type:"integer", min:1, max:3}
-研修期間         = 3             #@param {type:"integer", min:0, max:12}
-研修費用         = 300000         #@param {type:"number", min:0, step:1000}
-OJT期間         = 6             #@param {type:"integer", min:0, max:12}
-OJTコスト       = 600000         #@param {type:"number", min:0, step:1000}
-初年度給与       = 6000000        #@param {type:"number", min:0, step:10000}
-支援費           = 100000         #@param {type:"number", min:0, step:1000}
-間接費月額       = 200000         #@param {type:"number", min:0, step:1000}
-アサイン開始月   = 4             #@param {type:"integer", min:1, max:12}
-月次売上         = 500000         #@param {type:"number", min:0, step:1000}
-稼働率           = 0.8           #@param {type:"number", min:0.0, max:1.0, step:0.01}
-労働時間         = 160           #@param {type:"integer", min:0, max:200}
-割引率           = 0.03          #@param {type:"number", min:0.0, max:0.2, step:0.005}
-計算期間         = 60            #@param {type:"integer", min:1, max:120}
-シミュレーション回数 = 1000       #@param {type:"integer", min:1, max:10000}
+Purpose
+-------
+Estimate the pay‑back period (months until discounted cumulative cash flow
+turns non‑negative) for a newly hired consultant in a large IT consulting
+firm, using parameters sourced mainly from Japanese government statistics
+(as of 25 Jun 2025).
 
-@dataclass
-class Params:
-    採用費用: float
-    採用前分割月: int
-    研修期間: int
-    研修費用: float
-    OJT期間: int
-    OJTコスト: float
-    初年度給与: float
-    支援費: float
-    間接費月額: float
-    アサイン開始月: int
-    月次売上: float
-    稼働率: float
-    労働時間: int
-    割引率: float
-    計算期間: int
-    シミュレーション回数: int
+Key References (Japanese)
+-------------------------
+* 厚生労働省「賃金構造基本統計調査 令和5年」
+* 厚生労働省「能力開発基本調査 令和5年度」
+* 厚生労働省「雇用動向調査 令和5年」
+* Investing.com「日本10年債利回り」(2025‑06‑10 1.45 %)
+* レバテック「職種別人月単価相場 2024」
 
-# パラメータをParamsオブジェクトにまとめる
-params = Params(
-    採用費用, 採用前分割月, 研修期間, 研修費用,
-    OJT期間, OJTコスト, 初年度給与, 支援費,
-    間接費月額, アサイン開始月, 月次売上,
-    稼働率, 労働時間, 割引率, 計算期間, シミュレーション回数
-)
-print("パラメータを設定しました。次のセルを実行してください。")
-# ──────────────────────────────────────────
+Usage
+-----
+$ python hire_payback_simulation.py                  # run demo 5‑year simulation
 
-# ──────────────────────────────────────────
-# Cell 2: シミュレーション＆可視化セル
+Integrate this module in a Jupyter Notebook, Streamlit, or Dash app to
+build interactive dashboards (parameter sliders, scenario comparison, etc.).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, asdict
+from typing import Dict, List
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
-# 単一シミュレーション関数
-def simulate_cashflow(p: Params):
-    months = np.arange(0, p.計算期間 + 1)
-    df = pd.DataFrame({'month': months})
+# ──────────────────────────────────────────────────────────────────────────────
+# Default parameters (can be overridden)
+# ──────────────────────────────────────────────────────────────────────────────
+DEFAULT_PARAMS: Dict[str, float] = {
+    "salary": 6.4e6,                # 年俸 (¥)
+    "benefit_rate": 0.15,           # 福利厚生率 (会社負担)
+    "recruit_cost": 568e3,          # 1 名あたり採用コスト (¥)
+    "direct_training_cost": 15e3,   # OFF‑JT 教材等直接費 (¥)
+    "training_months": 3,           # 研修・非稼働月数 (M₀)
+    "bill_rate_hour": 6_875,        # 請求単価 (¥/h)
+    "hours_per_month": 160,         # 標準稼働時間 (h/mo)
+    "variable_cost": 70e3,          # 案件変動費 (¥/mo)
+    "overhead_cost": 50e3,          # 本社配賦 (¥/mo)
+    "U_max": 0.75,                  # 完全稼働率
+    "ramp_alpha": 0.35,             # ランプアップ係数 (指数)
+    "discount_rate_annual": 0.0145, # 割引率 (年率, 10 年国債利回り)
+}
 
-    # 月次固定コスト
-    salary_m   = p.初年度給与 / 12
-    support_m  = p.支援費     / 12
-    overhead_m = p.間接費月額
+# ──────────────────────────────────────────────────────────────────────────────
+@dataclass
+class SimulationResult:
+    df: pd.DataFrame
+    I0: float           # Initial Investment
+    payback_month: int | None
 
-    # 研修コスト: 線形減衰ウェイト
-    if p.研修期間 > 0:
-        w = np.linspace(1, 0, p.研修期間)
-        w /= w.sum()
-        train = np.concatenate([np.zeros(1), w * p.研修費用,
-                                np.zeros(p.計算期間 - p.研修期間)])
+
+class HireSimulation:
+    """Simulate discounted cash flow for a single new hire."""
+
+    def __init__(self, params: Dict[str, float] | None = None) -> None:
+        self.p: Dict[str, float] = {**DEFAULT_PARAMS, **(params or {})}
+        self.r_monthly: float = (1 + self.p["discount_rate_annual"]) ** (1 / 12) - 1
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Private helpers
+    # ──────────────────────────────────────────────────────────────────────
+    def _ramp_up(self, t: int) -> float:
+        """稼働率 U_t (t=1,2,…) を指数関数で計算"""
+        return self.p["U_max"] * (1 - math.exp(-self.p["ramp_alpha"] * t))
+
+    def _monthly_revenue(self, t: int) -> float:
+        return (
+            self.p["bill_rate_hour"]
+            * self.p["hours_per_month"]
+            * self._ramp_up(t)
+        )
+
+    def _monthly_direct_cost(self) -> float:
+        salary_benefit = self.p["salary"] * (1 + self.p["benefit_rate"]) / 12
+        return salary_benefit + self.p["variable_cost"]
+
+    def _monthly_cash_flow(self, t: int) -> float:
+        return self._monthly_revenue(t) - self._monthly_direct_cost() - self.p["overhead_cost"]
+
+    def _discount(self, cf: float, t: int) -> float:
+        return cf / ((1 + self.r_monthly) ** t)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────────────────────────────────
+    def simulate(self, horizon_months: int = 60) -> SimulationResult:
+        months = np.arange(1, horizon_months + 1)
+        rows: List[Dict[str, float]] = []
+
+        direct_monthly = self._monthly_direct_cost()
+        # Initial investment I0 = recruiting + training
+        C_train = (
+            (self.p["salary"] * (1 + self.p["benefit_rate"]) / 12)
+            * self.p["training_months"]
+            + self.p["direct_training_cost"]
+        )
+        I0 = self.p["recruit_cost"] + C_train
+
+        for t in months:
+            cf = self._monthly_cash_flow(t)
+            rows.append(
+                {
+                    "month": t,
+                    "revenue": self._monthly_revenue(t),
+                    "direct_cost": direct_monthly,
+                    "cash_flow": cf,
+                    "discounted_cf": self._discount(cf, t),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        df["cumulative_dcf"] = df["discounted_cf"].cumsum() - I0
+
+        # Payback determination
+        try:
+            payback_month = int(df.loc[df["cumulative_dcf"] >= 0, "month"].iloc[0])
+        except IndexError:
+            payback_month = None
+
+        return SimulationResult(df=df, I0=I0, payback_month=payback_month)
+
+    # ──────────────────────────────────────────────────────────────────────
+    def plot(self, result: SimulationResult, ax: plt.Axes | None = None) -> plt.Axes:
+        ax = ax or plt.gca()
+        ax.plot(result.df["month"], result.df["cumulative_dcf"], label="Cumulative DCF")
+        ax.axhline(0, linewidth=0.8, linestyle="-")
+        if result.payback_month:
+            ax.axvline(result.payback_month, linestyle="--", linewidth=0.8)
+            ax.text(
+                result.payback_month,
+                0,
+                f"Payback {result.payback_month} mo",
+                rotation=90,
+                va="bottom",
+            )
+        ax.set_xlabel("Month")
+        ax.set_ylabel("Cumulative DCF (¥)")
+        ax.set_title("Payback Period Simulation")
+        ax.legend()
+        return ax
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stand‑alone execution
+# ──────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    sim = HireSimulation()
+    res = sim.simulate(60)
+
+    print("─" * 60)
+    print("Initial Investment (I0): ¥{:,.0f}".format(res.I0))
+    if res.payback_month:
+        print(f"Payback Period        : {res.payback_month} months")
     else:
-        train = np.zeros_like(months, dtype=float)
+        print("Payback Period        : Not reached within horizon")
 
-    # OJTコスト: 線形減衰ウェイト
-    if p.OJT期間 > 0:
-        w2 = np.linspace(1, 0, p.OJT期間)
-        w2 /= w2.sum()
-        ojt = np.concatenate([
-            np.zeros(1 + p.研修期間),
-            w2 * p.OJTコスト,
-            np.zeros(p.計算期間 - p.研修期間 - p.OJT期間)
-        ])
-    else:
-        ojt = np.zeros_like(months, dtype=float)
-
-    # 採用費: 月0に計上
-    hire = np.zeros_like(months, dtype=float)
-    hire[0] = p.採用費用
-
-    # 合算コスト
-    df['cost'] = salary_m + support_m + overhead_m
-    df['training_cost'] = train
-    df['ojt_cost'] = ojt
-    df['hire_cost'] = hire
-    df['cost'] += df['training_cost'] + df['ojt_cost'] + df['hire_cost']
-
-    # 売上: アサイン後3ヶ月でランプアップ
-    def prod_factor(m):
-        if m < p.アサイン開始月:
-            return 0
-        ramp = 3
-        return min(max((m - p.アサイン開始月 + 1) / ramp, 0), 1)
-
-    df['prod_factor'] = df['month'].apply(prod_factor)
-    df['revenue'] = p.月次売上 * p.稼働率 * df['prod_factor']
-
-    # キャッシュフロー計算
-    df['net_cashflow'] = df['revenue'] - df['cost']
-    df['cum_cashflow'] = df['net_cashflow'].cumsum()
-
-    # 割引率を月次化
-    if p.割引率 > 0:
-        r_m = (1 + p.割引率) ** (1/12) - 1
-        df['discount_factor'] = (1 + r_m) ** df['month']
-        df['pv_cashflow'] = df['net_cashflow'] / df['discount_factor']
-        df['cum_pv'] = df['pv_cashflow'].cumsum()
-
-    return df
-
-# 回収ポイント検出
-
-def find_breakeven(df):
-    be = df[df['cum_cashflow'] >= 0]['month']
-    return int(be.iloc[0]) if not be.empty else None
-
-# 単一シミュレーション実行
-single = simulate_cashflow(params)
-breakeven = find_breakeven(single)
-print(f"🔹 回収達成月: {breakeven} ヶ月目" if breakeven is not None else "⚠️ 回収ポイントに到達しませんでした。")
-# 表示
-from IPython.display import display
-display(single.head(12))
-
-# グラフ描画: 累積キャッシュフロー
-plt.figure()
-plt.plot(single['month'], single['cum_cashflow'], marker='o')
-if breakeven is not None:
-    plt.axvline(breakeven, linestyle='--')
-plt.axhline(0, linestyle='--')
-plt.xlabel('Month')
-plt.ylabel('Cumulative Cashflow (¥)')
-plt.title('累積キャッシュフロー推移')
-plt.grid(True)
-plt.show()
-
-# グラフ描画: NPV推移
-if params.割引率 > 0:
-    plt.figure()
-    plt.plot(single['month'], single['cum_pv'], marker='o')
-    if breakeven is not None:
-        plt.axvline(breakeven, linestyle='--')
-    plt.axhline(0, linestyle='--')
-    plt.xlabel('Month')
-    plt.ylabel('累積PV (¥)')
-    plt.title('NPV推移')
-    plt.grid(True)
+    # Optional quick‑look plot
+    plt.figure(figsize=(8, 5))
+    sim.plot(res)
+    plt.tight_layout()
     plt.show()
-
-# モンテカルロシミュレーション
-breakevens = []
-for _ in range(params.シミュレーション回数):
-    kr = np.clip(np.random.normal(params.稼働率, 0.05), 0, 1)
-    ms = max(0, np.random.normal(params.月次売上, params.月次売上*0.1))
-    p2 = replace(params, 稼働率=kr, 月次売上=ms)
-    df2 = simulate_cashflow(p2)
-    br = find_breakeven(df2)
-    if br is not None:
-        breakevens.append(br)
-
-# 統計結果とヒストグラム
-if breakevens:
-    import statistics
-    median_be = statistics.median(breakevens)
-    p5, p95 = np.percentile(breakevens, [5, 95])
-    print(f"モンテカルロ回収月（中央値）: {median_be} ヶ月目")
-    print(f"モンテカルロ回収月（5-95パーセンタイル）: {p5:.1f} - {p95:.1f} ヶ月目")
-    plt.figure()
-    plt.hist(breakevens, bins=20)
-    plt.xlabel('回収達成月')
-    plt.ylabel('頻度')
-    plt.title('回収月の分布（モンテカルロ）')
-    plt.grid(True)
-    plt.show()
-else:
-    print("⚠️ モンテカルロで回収ポイントに到達したシミュレーションがありませんでした。")
-# ──────────────────────────────────────────

@@ -1,52 +1,41 @@
 # Investment ROI Simulator / 投資回収シミュレーター
 
-## Overview / 概要
+## 全体像
 
-This project simulates the return on investment (ROI) for hiring and training employees, including cashflow, break-even analysis, and Monte Carlo simulation for risk assessment.
+### 目標
 
-本プロジェクトは、従業員の採用・研修にかかる投資回収（ROI）をシミュレーションします。キャッシュフロー、損益分岐点分析、リスク評価のためのモンテカルロシミュレーションも含みます。
+新卒・中途にかかわらず「新規採用者 1 名あたり」の
 
----
+① 採用＋育成コスト（= 初期投資） と  
+② その後に生み出すキャッシュフロー
 
-## Features / 主な機能
-- Parameterized simulation of hiring, training, and assignment costs
-- Cumulative cashflow and NPV (Net Present Value) visualization
-- Monte Carlo simulation for break-even month distribution
-- Simple, modifiable Python code
-
-- 採用・研修・アサインコストのパラメータ化シミュレーション
-- 累積キャッシュフロー・NPV（正味現在価値）の可視化
-- モンテカルロ法による回収月分布の推定
-- シンプルで改変しやすいPythonコード
+を時系列で推定し、**割引現在価値（DCF）**ベースで累積したときに損益がプラスに転じる時点＝回収期間（Payback Period） を可視化する。
 
 ---
 
-## Usage / 使い方
+## 主要ステップとフォーミュラ
 
-1. Install dependencies / 依存パッケージのインストール:
-   ```bash
-   pip install numpy pandas matplotlib
-   ```
-2. Edit parameters in `investment-roi-simulator.py` / `investment-roi-simulator.py` 内のパラメータを編集
-3. Run the script / スクリプトを実行:
-   ```bash
-   python investment-roi-simulator.py
-   ```
-
----
-
-## Dependencies / 依存パッケージ
-- Python 3.8+
-- numpy
-- pandas
-- matplotlib
+| ステップ | 計算項目 | 数式・ロジック | 備考 |
+|---------|---------|---------------|------|
+| **① 採用コスト** | C_rec | C_src + C_scr + C_int + C_off + C_rel | ソーシング、スクリーニング、面接、オファー交渉、移転補助など |
+| **② 育成コスト** | C_train | C_dir + (S + B) × M_0 + C_trn | 直接研修費 + 研修中の給与・福利厚生（非稼働月数 M_0）+ トレーナー工数等 |
+| **③ 初期投資** | I_0 | C_rec + C_train | シミュレーション開始時点 (t=0) に一括計上 |
+| **④ 売上（毎月）** | R_t | BillRate × H × U_t | BillRate＝時間単価、H＝標準稼働時間、U_t＝月次稼働率 |
+| **⑤ 稼働率ランプアップ** | U_t | U_max × (1 - e^(-αt)) または U_max × (t/T_rmp) | 指数型 or 線形。t は月、T_rmp は完全稼働に要する月数 |
+| **⑥ 直接コスト（毎月）** | D_t | (S + B)/12 + C_var | 給与・福利厚生（月割り） + 変動間接費 |
+| **⑦ キャッシュフロー** | CF_t | R_t - D_t - C_oh | C_oh：固定間接費配賦 |
+| **⑧ 割引キャッシュフロー** | DCF_t | CF_t / (1+r)^(t/12) | r＝割引率（WACC など） |
+| **⑨ 累積 DCF** | N_t | -I_0 + Σ(i=1 to t) DCF_i | 初期投資を引いた累計 |
+| **⑩ 回収期間** | T_pay | min{t | N_t ≥ 0} | 月単位で判定 |
+| **⑪ ROI（任意）** | ROI | (Σ(t=1 to T)CF_t - I_0) / I_0 × 100% | Phillips ROI モデル等と互換 |
 
 ---
 
-## License / ライセンス
-MIT License
+## 既存指標・フレームワークとの対応
 
----
-
-## Author / 作者
-- hinata-koizumi 
+| 目的 | 本提案の式 | 既存指標・フレームワーク |
+|------|------------|------------------------|
+| 採用コスト算出 | C_rec | **Cost Per Hire** (SHRM) |
+| 育成 ROI | ROI 式 | **Phillips ROI**／Kirkpatrick L4 |
+| 時間価値考慮 | DCF_t | **NPV/DCF**（財務会計標準） |
+| 回収期間 | T_pay | **Payback Period**（資本予算） | 
