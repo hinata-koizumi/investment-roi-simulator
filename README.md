@@ -38,4 +38,34 @@
 | 採用コスト算出 | $C_{rec}$ | **Cost Per Hire** (SHRM) |
 | 育成 ROI | ROI 式 | **Phillips ROI**／Kirkpatrick L4 |
 | 時間価値考慮 | $DCF_t$ | **NPV/DCF**（財務会計標準） |
-| 回収期間 | $T_{pay}$ | **Payback Period**（資本予算） | 
+| 回収期間 | $T_{pay}$ | **Payback Period**（資本予算） |
+
+## 使い方・パラメータ変更方法
+
+### 基本的な実行
+
+```bash
+python investment-roi-simulator.py
+```
+
+### パラメータをコマンドラインで変更
+
+例: 年俸を700万円、請求単価を8000円/時、研修期間を6ヶ月に設定
+
+```bash
+python investment-roi-simulator.py --salary 7000000 --bill_rate_hour 8000 --training_months 6
+```
+
+利用可能なパラメータ一覧や説明は `--help` で確認できます。
+
+```bash
+python investment-roi-simulator.py --help
+```
+
+### インタラクティブモードで変更
+
+対話形式で全パラメータを一つずつ入力できます（Enterでデフォルト値を使用）:
+
+```bash
+python investment-roi-simulator.py --interactive
+``` 
